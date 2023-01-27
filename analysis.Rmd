@@ -1,0 +1,222 @@
+---
+title: 'The treatment of error in learners of Russian as a foreign language: visual
+  analytics'
+author: 'Wenceslao Arroyo-Machado'
+date: '`r Sys.Date()`'
+output:
+  html_document:
+    css: style.css
+    toc: yes
+    toc_float: yes
+    number_sections: yes
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Packages
+
+```{r packages, warning=FALSE, message=FALSE}
+library(testnet)
+library(cluster)
+library(fmsb)
+library(dplyr)
+library(GGally) 
+library(scales)
+library(wesanderson)
+```
+
+# Data
+
+```{r import_data}
+answers <- read.delim('data/answers.tsv',
+                      stringsAsFactors = FALSE, check.names = FALSE)
+
+categories <- read.delim('data/tags.tsv',
+                         header = TRUE,
+                         colClasses = c('character'),
+                         stringsAsFactors = FALSE, check.names = FALSE)
+
+c_answers <- read.delim('data/correct_ans.tsv',
+                        header = TRUE,
+                        colClasses = c('character'),
+                        stringsAsFactors = FALSE, check.names = FALSE)
+```
+
+# Analysis
+## Linguistic level
+Self-perceived linguistic level boxplot is generated before filtering the dataset to only answers.
+
+```{r language}
+ggplot(data=answers, aes(x=`¿Qué nivel crees que refleja mejor tu dominio de la lengua rusa en términos generales?`, y=Puntuación/75))+
+  geom_boxplot(fill='#2297e6', alpha=0.7)+
+  geom_jitter(width = 0.2, height = 0)+
+  scale_y_continuous(labels = percent_format(accuracy = 1), limits = c(0.4, 1))+
+  labs(x='Self-perceived linguistic level', y='Score (%)')+
+  theme_minimal()+
+  theme(axis.title = element_text(size=14),
+        axis.text = element_text(size=12),
+        legend.position = 'bottom',
+        legend.key.width = unit(1, 'cm'),
+        legend.title = element_text(vjust = 0.85))
+```
+
+## Co-error network
+From the answers, co-error networks are generated, one with all the relations and another with the edge weights greater than 1.
+
+```{r error_network, warning=FALSE, message=FALSE}
+answers <- answers[,c(11:85)]
+edges <- obtain_edges(answers, c_answers)
+
+cofails <- inner_join(x = edges, y = edges, by = 'source')
+cofails <- cofails[which(!(cofails$target.x == cofails$target.y)),]
+cofails <- mutate(cofails, Source = pmin(target.x, 
+                                                target.y), Target = pmax(target.x, target.y))
+cofails <- cofails[, which(!(names(cofails) %in% c('target.x', 
+                                                   'target.y', 'weight.x', 'weight.y')))]
+cofails <- distinct(cofails, .keep_all = TRUE)
+names(cofails)[names(cofails) == 'source'] <- 'Weight'
+cofails$Weight <- 1
+cofails <- group_by(cofails, Source, Target)
+cofails <- summarise(cofails, Weight = sum(Weight))
+cofails <- as.data.frame(cofails, stringsAsFactors = FALSE)
+
+write.table(cofails, 'map/fails_map.csv', sep = ',', row.names = FALSE, col.names = FALSE)
+write.table(cofails[which(cofails$Weight>1),], 'map/fails_map_filter.csv', sep = ',', row.names = FALSE, col.names = FALSE)
+```
+
+## Categories profiles
+Student error profiles by category are calculated.
+
+```{r profiles, warning=FALSE, message=FALSE}
+for(i in c(1:dim(c_answers)[1])){
+  c_answers[i,1] <- strsplit(c_answers[i,1], '\\.')[[1]][1]
+  categories[i,1] <- strsplit(categories[i,1], '\\.')[[1]][1]
+}
+
+edges <- inner_join(edges, categories[,c(1,2)], by=c('target'='Preguntas'))
+
+profiles <- edges[,c('source', 'weight', 'Categorías')] %>%
+  group_by(source, Categorías) %>%
+  summarise(weight=sum(weight))
+```
+
+Student error rates are calculated for each of the categories.
+
+```{r categories}
+a <- xtabs(weight~source+Categorías, profiles)
+a <- as.data.frame(matrix(a, ncol = ncol(a), dimnames = dimnames(a)))
+a$total <- rowSums(a)
+
+a_p <- a
+a_p[,1] <- a_p[,1]/a_p[,6]
+a_p[,2] <- a_p[,2]/a_p[,6]
+a_p[,3] <- a_p[,3]/a_p[,6]
+a_p[,4] <- a_p[,4]/a_p[,6]
+a_p[,5] <- a_p[,5]/a_p[,6]
+```
+
+From the profiles is obtained the coordinate and boxplot graphs.
+
+```{r ggcoord_categories, warning=FALSE}
+ggparcoord(data = a_p,
+           columns = 1:5, boxplot = TRUE,
+           groupColumn = 'total', showPoints = TRUE,
+           scale = 'globalminmax') +
+  scale_y_continuous(labels = percent_format(accuracy = 1))+
+  scale_colour_gradientn(colors=wes_palette('Zissou1', n = 5), name='Total failures', breaks=extended_breaks())+
+  labs(x='Categories', y='Percentage of failures')+
+  theme_minimal()+
+  theme(axis.title = element_text(size=14),
+        axis.text = element_text(size=12),
+        legend.position = 'bottom',
+        legend.key.width = unit(1, 'cm'),
+        legend.title = element_text(vjust = 0.85))
+```
+
+## Cluster profiles
+From the error percentiles, clusters of errors are obtained using kmeans.
+
+```{r}
+a_clusters <- a_p
+
+a_clusters[,1] <- 100*percent_rank(a_clusters[,1])
+a_clusters[,2] <- 100*percent_rank(a_clusters[,2])
+a_clusters[,3] <- 100*percent_rank(a_clusters[,3])
+a_clusters[,4] <- 100*percent_rank(a_clusters[,4])
+a_clusters[,5] <- 100*percent_rank(a_clusters[,5])
+
+k2 <- kmeans(a_clusters[,1:5], centers = 4, nstart = 25, iter.max = 100)
+
+a_clusters$clusters <- k2$cluster
+a_clusters_2 <- a_clusters %>%
+  group_by(clusters) %>%
+  summarise_all(.funs = mean)
+
+max_min <- data.frame(
+  aspecto = c(100, 0), caso = c(100, 0), lex = c(100, 0),
+  `o.com ` = c(100, 0), v.mov = c(100, 0), check.names = F
+)
+
+rownames(max_min) <- c('Max', 'Min')
+
+a_clusters_2 <- rbind.data.frame(as.data.frame(a_clusters_2[,2:6]), max_min)
+```
+
+The clusters are presented as radar plots.
+
+```{r}
+radarchart(a_clusters_2[c('Max', 'Min', '1'),], pcol='#00AFBB', pfcol = alpha('#00AFBB', 0.5))
+radarchart(a_clusters_2[c('Max', 'Min', '2'),], pcol='#E7B800', pfcol = alpha('#E7B800', 0.5))
+radarchart(a_clusters_2[c('Max', 'Min', '3'),], pcol='#FC4E07', pfcol = alpha('#FC4E07', 0.5))
+radarchart(a_clusters_2[c('Max', 'Min', '4'),], pcol='#046C9A', pfcol = alpha('#046C9A', 0.5))
+```
+
+## Subcategories profiles
+The same analysis is carried out but at subcategory level.
+
+```{r sub_profiles, warning=FALSE, message=FALSE}
+edges <- obtain_edges(answers, c_answers)
+edges <- inner_join(edges, categories[,c(1,3)], by=c('target'='Preguntas'))
+names(edges)[4] <- 'Categorías'
+
+profiles <- edges[,c('source', 'weight', 'Categorías')] %>%
+  group_by(source, Categorías) %>%
+  summarise(weight=sum(weight))
+
+a <- xtabs(weight~source+Categorías, profiles)
+a <- as.data.frame(matrix(a, ncol = ncol(a), dimnames = dimnames(a)))
+a$total <- rowSums(a)
+
+a_p <- a
+
+a_p[,1] <- a_p[,1]/a_p[,10]
+a_p[,2] <- a_p[,2]/a_p[,10]
+a_p[,3] <- a_p[,3]/a_p[,10]
+a_p[,4] <- a_p[,4]/a_p[,10]
+a_p[,5] <- a_p[,5]/a_p[,10]
+a_p[,6] <- a_p[,6]/a_p[,10]
+a_p[,7] <- a_p[,7]/a_p[,10]
+a_p[,8] <- a_p[,8]/a_p[,10]
+a_p[,9] <- a_p[,9]/a_p[,10]
+```
+
+From the profiles (subcategories) is obtained the coordinate and boxplot graphs.
+
+```{r ggcoord_subcategories, warning=FALSE}
+ggparcoord(data = a_p,
+           columns = 1:9, boxplot = TRUE,
+           groupColumn = 'total', showPoints = TRUE,
+           scale = 'globalminmax') +
+  scale_y_continuous(labels = percent_format(accuracy = 1))+
+  scale_colour_gradientn(colors=wes_palette('Zissou1', n = 5), name='Total failures', breaks=extended_breaks())+
+  labs(x='Subategories', y='Percentage of failures')+
+  theme_minimal()+
+  theme(axis.title = element_text(size=14),
+        axis.text = element_text(size=12),
+        legend.position = 'bottom',
+        legend.key.width = unit(1, 'cm'),
+        legend.title = element_text(vjust = 0.85))
+```
