@@ -1,3 +1,5 @@
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.7581912.svg)](https://doi.org/10.5281/zenodo.7581912)
+
 # The treatment of error in learners of Russian as a foreign language: visual analytics
 This repository includes all data processing for the paper *The treatment of error in learners of Russian as a foreign language: visual analytics*.
 
